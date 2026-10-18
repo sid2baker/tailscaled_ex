@@ -1,5 +1,6 @@
 defmodule Tailscaled.Test.Fixture do
   @moduledoc false
+  alias Tailscaled.{Controller, LocalAPI}
   alias Tailscaled.Test.UnixHTTP
 
   # Exercise the application's actual tree with isolated OTP start arguments.
@@ -107,6 +108,80 @@ defmodule Tailscaled.Test.Fixture do
         ],
       extra
     )
+  end
+
+  def await_enrolled(opts, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    await_enrolled_until(opts, deadline)
+  end
+
+  defp await_enrolled_until(opts, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      {:error, {:enrollment_deadline, PropertyTable.get(opts[:table], ["auth", "state"])}}
+    else
+      identity = enrolled_identity(Keyword.put(opts, :timeout, min(remaining, 1_000)))
+
+      if identity do
+        {:ok, identity}
+      else
+        Process.sleep(min(remaining, 100))
+        await_enrolled_until(opts, deadline)
+      end
+    end
+  end
+
+  defp enrolled_identity(opts) do
+    with :authenticated <- PropertyTable.get(opts[:table], ["auth", "state"]),
+         :online <- PropertyTable.get(opts[:table], ["state"]),
+         true <-
+           tailscale_address?(PropertyTable.get(opts[:table], ["ipv4"])) or
+             tailscale_address?(PropertyTable.get(opts[:table], ["ipv6"])),
+         {:ok, %{"Self" => %{"ID" => id, "Online" => true}}, _} <-
+           LocalAPI.request(opts, "GET", "status?peers=false"),
+         true <- is_binary(id) and Regex.match?(~r/\A[a-zA-Z0-9]+\z/, id) do
+      # Never pass raw status (which can include login URLs) to assertions.
+      %{
+        node_id: id,
+        ipv4: PropertyTable.get(opts[:table], ["ipv4"]),
+        ipv6: PropertyTable.get(opts[:table], ["ipv6"])
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp tailscale_address?({100, second, _, _}) when second in 64..127, do: true
+  defp tailscale_address?({0xFD7A, 0x115C, 0xA1E0, _, _, _, _, _}), do: true
+  defp tailscale_address?(_), do: false
+
+  # Logout removes an ephemeral node from the tailnet; deleting files does not.
+  def cleanup_authenticated_daemon(opts, directory, hostname) do
+    logout = safely(fn -> Controller.logout(opts[:controller]) end)
+
+    stopped =
+      safely(fn ->
+        if pid = Process.whereis(opts[:supervisor]), do: Supervisor.stop(pid, :shutdown, 15_000)
+        :ok
+      end)
+
+    removed = if stopped == :ok, do: File.rm_rf(directory), else: :error
+
+    if logout == :ok and stopped == :ok and match?({:ok, _}, removed) do
+      :ok
+    else
+      # No raw errors, status responses, URLs, or process state in failure output.
+      {:error, "Cleanup failed; check/remove test node #{hostname} in the tailnet Machines page"}
+    end
+  end
+
+  defp safely(fun) do
+    fun.()
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
   end
 
   def eventually(fun, tries \\ 100)

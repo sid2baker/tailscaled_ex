@@ -2,14 +2,25 @@ defmodule Tailscaled.DaemonIntegrationTest do
   use ExUnit.Case, async: false
   import Tailscaled.Test.Fixture, only: [eventually: 1, eventually: 2]
   alias Tailscaled.{Controller, LocalAPI, Monitor}
-  alias Tailscaled.Test.Fixture
+  alias Tailscaled.Test.{Fixture, Tailnet}
 
   @moduletag :integration
   @moduletag timeout: 90_000
 
-  setup do
+  setup ctx do
     binary = System.fetch_env!("TAILSCALED_TEST_BINARY")
-    directory = Path.join(System.tmp_dir!(), "tsx-real-#{System.unique_integer([:positive])}")
+    hostname = "tsx-auth-#{Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)}"
+
+    tailnet =
+      if ctx[:real_auth] do
+        IO.puts("Real-auth test node: #{hostname}")
+        assert {:ok, tailnet} = Tailnet.create_key(hostname)
+        tailnet
+      end
+
+    directory = Path.join(System.tmp_dir!(), hostname)
+    File.mkdir!(directory)
+    File.chmod!(directory, 0o700)
 
     opts =
       Fixture.options(__MODULE__, Path.join(directory, "run/tailscaled.sock"),
@@ -22,15 +33,29 @@ defmodule Tailscaled.DaemonIntegrationTest do
         retry_max: 500
       )
 
-    start_supervised!({Fixture, opts})
-    on_exit(fn -> File.rm_rf(directory) end)
+    if tailnet do
+      on_exit(fn ->
+        # Logout removes the ephemeral node; the API then removes any leftovers.
+        local = Fixture.cleanup_authenticated_daemon(opts, directory, hostname)
+        assert {local, Tailnet.cleanup(tailnet)} == {:ok, :ok}
+      end)
+
+      # ExUnit stops supervised children before on_exit. Keep this owned tree alive
+      # until the callback can log out, including after assertion failures/timeouts.
+      {:ok, pid} = Tailscaled.Application.start(:normal, opts)
+      Process.unlink(pid)
+    else
+      start_supervised!({Fixture, opts})
+      on_exit(fn -> File.rm_rf(directory) end)
+    end
+
     assert :ok = Monitor.ready(opts[:monitor], 10_000)
 
     eventually(fn ->
       assert PropertyTable.get(opts[:table], ["configuration", "state"]) == :ready
     end)
 
-    %{opts: opts, table: opts[:table], directory: directory}
+    %{opts: opts, table: opts[:table], directory: directory, hostname: hostname, tailnet: tailnet}
   end
 
   test "real daemon owns preferences, including memory-only preferences before enrollment", ctx do
@@ -174,6 +199,55 @@ defmodule Tailscaled.DaemonIntegrationTest do
     login_url_absent = is_nil(PropertyTable.get(ctx.table, ["auth", "url"]))
     assert login_url_absent
     assert PropertyTable.get(ctx.table, ["state"]) != :online
+  end
+
+  @tag :real_auth
+  @tag timeout: 240_000
+  test "auth-key enrollment becomes online and retains the enrolled identity after restart",
+       ctx do
+    # DNS, routes, and kernel networking stay untouched; no Serve or peer traffic.
+    assert :ok =
+             Controller.configure(ctx.opts[:controller], %{
+               hostname: ctx.hostname,
+               accept_dns: false,
+               accept_routes: false
+             })
+
+    assert :ok = Tailnet.login(ctx.tailnet, ctx.opts[:controller])
+    assert {:ok, identity} = Fixture.await_enrolled(ctx.opts, 60_000)
+    assert {:ok, device} = Tailnet.device(ctx.tailnet, identity.node_id)
+
+    assert device == %{
+             "nodeId" => identity.node_id,
+             "hostname" => ctx.hostname,
+             "tags" => ["tag:ci"],
+             "authorized" => true,
+             "isEphemeral" => true
+           }
+
+    generation = PropertyTable.get(ctx.table, ["monitor", "generation"])
+    daemon_pid = :sys.get_state(ctx.opts[:daemon]).pid
+    assert :ok = GenServer.stop(daemon_pid, :shutdown)
+
+    eventually(
+      fn -> assert PropertyTable.get(ctx.table, ["monitor", "generation"]) > generation end,
+      500
+    )
+
+    assert :sys.get_state(ctx.opts[:daemon]).pid != daemon_pid
+    # No second login and a fresh monitor generation: not cached success.
+    assert {:ok, restarted_identity} = Fixture.await_enrolled(ctx.opts, 60_000)
+    assert restarted_identity == identity
+    assert {:ok, ^device} = Tailnet.device(ctx.tailnet, restarted_identity.node_id)
+
+    assert :ok = Controller.logout(ctx.opts[:controller])
+
+    eventually(fn ->
+      assert PropertyTable.get(ctx.table, ["auth", "state"]) == :needs_login
+      assert PropertyTable.get(ctx.table, ["state"]) == :offline
+      assert PropertyTable.get(ctx.table, ["ipv4"]) == nil
+      assert PropertyTable.get(ctx.table, ["ipv6"]) == nil
+    end)
   end
 
   defp configuration(ctx), do: PropertyTable.get(ctx.table, ["configuration", "value"])

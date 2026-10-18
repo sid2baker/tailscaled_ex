@@ -12,4 +12,22 @@ exclude =
     do: exclude,
     else: [network: true] ++ exclude
 
+exclude =
+  if System.get_env("TAILSCALED_TEST_AUTH") == "1" do
+    # Explicit opt-in with missing credentials is a failure, never a silent skip.
+    for name <- [
+          "TAILSCALED_TEST_BINARY",
+          "TS_OAUTH_CLIENT_ID",
+          "TS_AUDIENCE",
+          "ACTIONS_ID_TOKEN_REQUEST_URL",
+          "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+        ] do
+      if System.get_env(name) in [nil, ""], do: raise("real authentication requires #{name}")
+    end
+
+    exclude
+  else
+    [real_auth: true] ++ exclude
+  end
+
 ExUnit.start(exclude: exclude)

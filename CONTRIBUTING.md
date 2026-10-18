@@ -20,6 +20,53 @@ To include real-daemon tests, set `TAILSCALED_TEST_BINARY` to an absolute path.
 `TAILSCALED_TEST_NETWORK=1` additionally enables tests that contact Tailscale's
 control plane. These tests do not establish enrolled-tailnet or hardware support.
 
+### Real authentication (manual, protected)
+
+`.github/workflows/tailnet.yml` is the only workflow with `id-token: write`. It runs
+only via manual dispatch on `main`, in the `tailnet-ci` environment:
+
+```sh
+gh workflow run tailnet.yml --ref main
+```
+
+Setup:
+
+- **GitHub:** create environment `tailnet-ci`, restricted to `main`, with
+  environment secrets `TS_OAUTH_CLIENT_ID` and `TS_AUDIENCE`.
+- **Tailscale:** create a dedicated
+  [OIDC trust credential](https://tailscale.com/kb/1581/workload-identity-federation):
+  - Issuer: `https://token.actions.githubusercontent.com`
+  - Subject: `repo:sid2baker/tailscaled_ex:environment:tailnet-ci`
+  - Custom claims:
+    - `repository=sid2baker/tailscaled_ex`
+    - `ref=refs/heads/main`
+    - `workflow_ref=sid2baker/tailscaled_ex/.github/workflows/tailnet.yml@refs/heads/main`
+    - `event_name=workflow_dispatch`
+  - Scopes: `auth_keys` and `devices:core` (write).
+  - Tag: `tag:ci`.
+
+  Do not broaden this credential or tailnet policy to make the test pass.
+
+The test exchanges a GitHub OIDC token for a temporary API token. It then creates
+a 10-minute, single-use, ephemeral, preauthorized `tag:ci` key and enrolls an
+isolated userspace daemon through `Tailscaled`'s own auth-key login. It verifies:
+
+- the daemon is online with a Tailscale address;
+- through the API, the node is authorized, ephemeral and tagged `tag:ci`;
+- the identity survives a daemon restart;
+- logout takes effect.
+
+**Peer connectivity, routing and HTTPS Serve are not tested.**
+
+Credentials stay in memory and are masked in the logs. Errors report only the
+failing step and HTTP status; see Tailscale's **Trust credentials** page for
+token-exchange details. On success or failure, the test logs out, deletes leftover
+nodes with its random `tsx-auth-…` hostname and `tag:ci`, and revokes the key.
+
+If the runner dies mid-test, check **Machines** for the logged hostname.
+Tailscale removes [offline ephemeral nodes](https://tailscale.com/kb/1111/ephemeral-nodes)
+on its own, and unused keys expire after 10 minutes.
+
 Include regression tests for behavior changes. Describe user-visible changes in
 `CHANGELOG.md` under `Unreleased`.
 Do not use commit logs, test counts, or internal refactors as release notes.

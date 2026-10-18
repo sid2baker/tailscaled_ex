@@ -1,0 +1,54 @@
+name: Tailnet enrollment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authentication:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: tailnet-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MIX_ENV: test
+      ERL_CRASH_DUMP: /dev/null
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require environment configuration
+        run: |
+          test -n "$TS_OAUTH_CLIENT_ID" || { echo 'Missing tailnet-ci secret TS_OAUTH_CLIENT_ID'; exit 1; }
+          test -n "$TS_AUDIENCE" || { echo 'Missing tailnet-ci secret TS_AUDIENCE'; exit 1; }
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - name: Install dependencies and pinned daemon
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+          curl --fail --location --retry 3 \
+            https://pkgs.tailscale.com/stable/tailscale_1.102.3_amd64.tgz \
+            --output "$RUNNER_TEMP/tailscale.tgz"
+          echo "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5  $RUNNER_TEMP/tailscale.tgz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/tailscale.tgz" -C "$RUNNER_TEMP"
+          echo "TAILSCALED_TEST_BINARY=$RUNNER_TEMP/tailscale_1.102.3_amd64/tailscaled" >> "$GITHUB_ENV"
+
+      # Tokens/keys stay inside the test VM, never GITHUB_ENV, outputs, or artifacts.
+      - name: Enroll owned daemon, verify API state, restart, log out, and clean up
+        env:
+          TAILSCALED_TEST_AUTH: "1"
+        run: mix test test/integration/daemon_test.exs --only real_auth
