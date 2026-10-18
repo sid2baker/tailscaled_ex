@@ -133,11 +133,18 @@ defmodule Tailscaled.DaemonIntegrationTest do
   test "real browser enrollment emits a URL and preserves the generated machine identity on restart",
        ctx do
     assert :ok = Controller.login(ctx.opts[:controller], :interactive)
-    assert {:ok, url} = Monitor.await_login(ctx.opts[:monitor], 40_000)
-    assert String.starts_with?(url, "https://")
+
+    login_url_received =
+      case Monitor.await_login(ctx.opts[:monitor], 40_000) do
+        {:ok, "https://" <> _} -> true
+        _ -> false
+      end
+
+    assert login_url_received
     assert PropertyTable.get(ctx.table, ["auth", "state"]) == :authenticating
     path = Path.join(ctx.directory, "identity/tailscaled.state")
     fingerprint = machine_fingerprint(path)
+    assert is_binary(fingerprint)
     generation = PropertyTable.get(ctx.table, ["monitor", "generation"])
     GenServer.stop(:sys.get_state(ctx.opts[:daemon]).pid, :shutdown)
 
@@ -164,14 +171,19 @@ defmodule Tailscaled.DaemonIntegrationTest do
       2_000
     )
 
-    assert PropertyTable.get(ctx.table, ["auth", "url"]) == nil
+    login_url_absent = is_nil(PropertyTable.get(ctx.table, ["auth", "url"]))
+    assert login_url_absent
     assert PropertyTable.get(ctx.table, ["state"]) != :online
   end
 
   defp configuration(ctx), do: PropertyTable.get(ctx.table, ["configuration", "value"])
 
   defp machine_fingerprint(path) do
-    key = path |> File.read!() |> JSON.decode!() |> Map.fetch!("_machinekey")
-    :crypto.hash(:sha256, key)
+    with {:ok, data} <- File.read(path),
+         {:ok, %{"_machinekey" => key}} when is_binary(key) <- JSON.decode(data) do
+      :crypto.hash(:sha256, key)
+    else
+      _ -> nil
+    end
   end
 end
