@@ -6,6 +6,12 @@ for breaking changes, and versions follow [Semantic Versioning](https://semver.o
 
 ## Unreleased
 
+### Added
+
+- `Tailscaled.Testing.auth_key/1` creates short-lived, single-use auth keys for tests
+  and CI from a GitHub Actions OIDC identity through Tailscale workload identity
+  federation.
+
 ## 0.3.0 - 2026-10-15
 
 ### Breaking changes

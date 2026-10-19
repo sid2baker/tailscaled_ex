@@ -106,6 +106,24 @@ There is no background polling.
 See the [API reference](https://github.com/sid2baker/tailscaled_ex/blob/main/lib/tailscaled.ex)
 for settings, properties, login options, and logout.
 
+## 5. Test against a real tailnet in CI
+
+`Tailscaled.Testing.auth_key/1` creates a short-lived, single-use auth key from the
+GitHub Actions job's OIDC identity, so CI can log in without a stored key:
+
+```elixir
+{:ok, key} = Tailscaled.Testing.auth_key()
+:ok = Tailscaled.login(auth_key: key)
+```
+
+It needs a Tailscale OIDC trust credential with the `auth_keys` scope, and a job with
+`id-token: write`, `TS_OAUTH_CLIENT_ID`, `TS_AUDIENCE`, and `TS_TAGS`. See the
+[module docs](https://github.com/sid2baker/tailscaled_ex/blob/main/lib/tailscaled/testing.ex)
+for setup. It is a testing aid, not a production login method.
+
+OIDC works only in CI. Locally, create a reusable, ephemeral, pre-approved, tagged
+auth key for testing in the admin console and pass it to `Tailscaled.login/1`.
+
 ## Development
 
 Run `mix deps.get && mix ci`. To include isolated real-daemon tests:
