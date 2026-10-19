@@ -42,17 +42,16 @@ Setup:
     - `ref=refs/heads/main`
     - `workflow_ref=sid2baker/tailscaled_ex/.github/workflows/tailnet.yml@refs/heads/main`
     - `event_name=workflow_dispatch`
-  - Scopes: `auth_keys` and `devices:core` (write).
-  - Tag: `tag:ci`.
+  - Scope: `auth_keys` (write).
+  - Tag: `tag:ci`. The workflow sets `TS_TAGS: tag:ci`.
 
   Do not broaden this credential or tailnet policy to make the test pass.
 
-The test exchanges a GitHub OIDC token for a temporary API token. It then creates
-a 10-minute, single-use, ephemeral, preauthorized `tag:ci` key and enrolls an
-isolated userspace daemon through `Tailscaled`'s own auth-key login. It verifies:
+In CI, the test gets its key from `Tailscaled.Testing.auth_key/1`: 10-minute,
+single-use, ephemeral and preauthorized. It enrolls an isolated userspace daemon
+through `Tailscaled`'s own auth-key login and verifies, through the daemon's LocalAPI:
 
-- the daemon is online with a Tailscale address;
-- through the API, the node is authorized, ephemeral and tagged `tag:ci`;
+- the node is online with a Tailscale address and tagged;
 - the identity survives a daemon restart;
 - logout takes effect.
 
@@ -60,12 +59,32 @@ isolated userspace daemon through `Tailscaled`'s own auth-key login. It verifies
 
 Credentials stay in memory and are masked in the logs. Errors report only the
 failing step and HTTP status; see Tailscale's **Trust credentials** page for
-token-exchange details. On success or failure, the test logs out, deletes leftover
-nodes with its random `tsx-auth-…` hostname and `tag:ci`, and revokes the key.
+token-exchange details. On success or failure, the test logs out, which removes the
+ephemeral node.
 
 If the runner dies mid-test, check **Machines** for the logged hostname.
 Tailscale removes [offline ephemeral nodes](https://tailscale.com/kb/1111/ephemeral-nodes)
 on its own, and unused keys expire after 10 minutes.
+
+#### Running it locally with a test auth key
+
+GitHub OIDC tokens exist only in CI. Locally, use an auth key created for testing:
+
+1. Ideally in a separate tailnet used only for testing, open **Settings → Keys →
+   Generate auth key** in the admin console and select **Reusable**, **Ephemeral**,
+   **Pre-approved**, and a tag such as `tag:ci`. Keys expire after at most 90 days.
+   In a shared tailnet, use a policy that lets the tag reach nothing else.
+2. Install the tested daemon and run the test:
+
+   ```sh
+   mix tailscaled.install /tmp/tailscaled-test/tailscaled
+   TAILSCALED_TEST_AUTH_KEY=tskey-auth-... TAILSCALED_TEST_BINARY=/tmp/tailscaled-test/tailscaled \
+     mix test test/integration/daemon_test.exs --only real_auth
+   ```
+
+The test starts its own daemon with temporary state, a private socket, userspace
+networking and a random port, so it runs alongside a `tailscaled` already on the
+machine without touching it. Logout removes each run's ephemeral node.
 
 Include regression tests for behavior changes. Describe user-visible changes in
 `CHANGELOG.md` under `Unreleased`.

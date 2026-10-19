@@ -2,7 +2,7 @@ defmodule Tailscaled.DaemonIntegrationTest do
   use ExUnit.Case, async: false
   import Tailscaled.Test.Fixture, only: [eventually: 1, eventually: 2]
   alias Tailscaled.{Controller, LocalAPI, Monitor}
-  alias Tailscaled.Test.{Fixture, Tailnet}
+  alias Tailscaled.Test.Fixture
 
   @moduletag :integration
   @moduletag timeout: 90_000
@@ -10,14 +10,6 @@ defmodule Tailscaled.DaemonIntegrationTest do
   setup ctx do
     binary = System.fetch_env!("TAILSCALED_TEST_BINARY")
     hostname = "tsx-auth-#{Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)}"
-
-    tailnet =
-      if ctx[:real_auth] do
-        IO.puts("Real-auth test node: #{hostname}")
-        assert {:ok, tailnet} = Tailnet.create_key(hostname)
-        tailnet
-      end
-
     directory = Path.join(System.tmp_dir!(), hostname)
     File.mkdir!(directory)
     File.chmod!(directory, 0o700)
@@ -33,11 +25,11 @@ defmodule Tailscaled.DaemonIntegrationTest do
         retry_max: 500
       )
 
-    if tailnet do
+    if ctx[:real_auth] do
+      IO.puts("Real-auth test node: #{hostname}")
+
       on_exit(fn ->
-        # Logout removes the ephemeral node; the API then removes any leftovers.
-        local = Fixture.cleanup_authenticated_daemon(opts, directory, hostname)
-        assert {local, Tailnet.cleanup(tailnet)} == {:ok, :ok}
+        assert Fixture.cleanup_authenticated_daemon(opts, directory, hostname) == :ok
       end)
 
       # ExUnit stops supervised children before on_exit. Keep this owned tree alive
@@ -55,7 +47,7 @@ defmodule Tailscaled.DaemonIntegrationTest do
       assert PropertyTable.get(opts[:table], ["configuration", "state"]) == :ready
     end)
 
-    %{opts: opts, table: opts[:table], directory: directory, hostname: hostname, tailnet: tailnet}
+    %{opts: opts, table: opts[:table], directory: directory, hostname: hostname}
   end
 
   test "real daemon owns preferences, including memory-only preferences before enrollment", ctx do
@@ -213,17 +205,11 @@ defmodule Tailscaled.DaemonIntegrationTest do
                accept_routes: false
              })
 
-    assert :ok = Tailnet.login(ctx.tailnet, ctx.opts[:controller])
+    # Enrollment uses the library's own login path. Test keys must be tagged.
+    assert {:ok, key} = Fixture.auth_key()
+    assert :ok = Controller.login(ctx.opts[:controller], {:auth_key, key})
     assert {:ok, identity} = Fixture.await_enrolled(ctx.opts, 60_000)
-    assert {:ok, device} = Tailnet.device(ctx.tailnet, identity.node_id)
-
-    assert device == %{
-             "nodeId" => identity.node_id,
-             "hostname" => ctx.hostname,
-             "tags" => ["tag:ci"],
-             "authorized" => true,
-             "isEphemeral" => true
-           }
+    assert [_ | _] = identity.tags
 
     generation = PropertyTable.get(ctx.table, ["monitor", "generation"])
     daemon_pid = :sys.get_state(ctx.opts[:daemon]).pid
@@ -238,7 +224,6 @@ defmodule Tailscaled.DaemonIntegrationTest do
     # No second login and a fresh monitor generation: not cached success.
     assert {:ok, restarted_identity} = Fixture.await_enrolled(ctx.opts, 60_000)
     assert restarted_identity == identity
-    assert {:ok, ^device} = Tailnet.device(ctx.tailnet, restarted_identity.node_id)
 
     assert :ok = Controller.logout(ctx.opts[:controller])
 

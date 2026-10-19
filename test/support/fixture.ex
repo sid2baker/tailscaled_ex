@@ -110,6 +110,15 @@ defmodule Tailscaled.Test.Fixture do
     )
   end
 
+  # Locally: a manually created test key. In CI: a fresh key through GitHub OIDC.
+  def auth_key do
+    cond do
+      key = System.get_env("TAILSCALED_TEST_AUTH_KEY") -> {:ok, key}
+      System.get_env("ACTIONS_ID_TOKEN_REQUEST_URL") -> Tailscaled.Testing.auth_key()
+      true -> {:error, "set TAILSCALED_TEST_AUTH_KEY to a test auth key"}
+    end
+  end
+
   def await_enrolled(opts, timeout) do
     deadline = System.monotonic_time(:millisecond) + timeout
     await_enrolled_until(opts, deadline)
@@ -138,12 +147,13 @@ defmodule Tailscaled.Test.Fixture do
          true <-
            tailscale_address?(PropertyTable.get(opts[:table], ["ipv4"])) or
              tailscale_address?(PropertyTable.get(opts[:table], ["ipv6"])),
-         {:ok, %{"Self" => %{"ID" => id, "Online" => true}}, _} <-
+         {:ok, %{"Self" => %{"ID" => id, "Online" => true} = self}, _} <-
            LocalAPI.request(opts, "GET", "status?peers=false"),
          true <- is_binary(id) and Regex.match?(~r/\A[a-zA-Z0-9]+\z/, id) do
       # Never pass raw status (which can include login URLs) to assertions.
       %{
         node_id: id,
+        tags: self["Tags"],
         ipv4: PropertyTable.get(opts[:table], ["ipv4"]),
         ipv6: PropertyTable.get(opts[:table], ["ipv6"])
       }
