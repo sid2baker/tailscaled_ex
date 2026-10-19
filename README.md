@@ -9,7 +9,7 @@ Requires Linux, Elixir 1.19+, and OTP 28+. Tested with Tailscale **1.102.3**.
 Add the Hex dependency to `mix.exs`:
 
 ```elixir
-{:tailscaled_ex, "~> 0.3.0"}
+{:tailscaled_ex, "~> 0.4.0"}
 ```
 
 For Nerves, download the daemon into your firmware overlay:

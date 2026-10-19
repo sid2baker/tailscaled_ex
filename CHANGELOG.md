@@ -6,6 +6,8 @@ for breaking changes, and versions follow [Semantic Versioning](https://semver.o
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-19
+
 ### Added
 
 - `Tailscaled.Testing.auth_key/1` creates short-lived, single-use auth keys for tests
