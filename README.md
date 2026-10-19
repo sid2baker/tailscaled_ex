@@ -106,23 +106,123 @@ There is no background polling.
 See the [API reference](https://github.com/sid2baker/tailscaled_ex/blob/main/lib/tailscaled.ex)
 for settings, properties, login options, and logout.
 
-## 5. Test against a real tailnet in CI
+## 5. Test your Tailscale integration
 
-`Tailscaled.Testing.auth_key/1` creates a short-lived, single-use auth key from the
-GitHub Actions job's OIDC identity, so CI can log in without a stored key:
+Test most of your code without a daemon, and keep one opt-in test that joins a real
+test tailnet.
+
+### Ordinary tests: no daemon
+
+This library's application also starts during your tests. Keep it from starting a
+daemon in `config/test.exs`:
 
 ```elixir
-{:ok, key} = Tailscaled.Testing.auth_key()
-:ok = Tailscaled.login(auth_key: key)
+config :tailscaled_ex, manage_daemon: false, socket: "/nonexistent/tailscaled.sock"
 ```
 
-It needs a Tailscale OIDC trust credential with the `auth_keys` scope, and a job with
-`id-token: write`, `TS_OAUTH_CLIENT_ID`, `TS_AUDIENCE`, and `TS_TAGS`. See the
-[module docs](https://github.com/sid2baker/tailscaled_ex/blob/main/lib/tailscaled/testing.ex)
-for setup. It is a testing aid, not a production login method.
+State then reads `:unavailable`, and commands return `{:error, :unavailable}`.
+To test how your code reacts to Tailscale, send your process the messages a
+subscription would deliver:
 
-OIDC works only in CI. Locally, create a reusable, ephemeral, pre-approved, tagged
-auth key for testing in the admin console and pass it to `Tailscaled.login/1`.
+```elixir
+send(pid, {Tailscaled, ["state"], :offline, :online, %{old_timestamp: 0, new_timestamp: 0}})
+```
+
+Replace your own calls to `Tailscaled` with a test double where you need specific
+command results.
+
+### A real tailnet test, on request
+
+When `TAILSCALED_TEST_BINARY` is set, give tests their own userspace daemon with fresh
+state in `config/runtime.exs`. It runs alongside any `tailscaled` already on the
+machine without touching it:
+
+```elixir
+binary = System.get_env("TAILSCALED_TEST_BINARY")
+
+if config_env() == :test and binary do
+  dir = Path.join(System.tmp_dir!(), "my_app-tailscaled-#{System.os_time()}")
+
+  config :tailscaled_ex,
+    manage_daemon: true,
+    daemon_path: binary,
+    tun: :userspace,
+    data_dir: dir,
+    socket: Path.join(dir, "run/tailscaled.sock")
+end
+```
+
+Exclude the test by default with `ExUnit.start(exclude: [:tailnet])` in
+`test/test_helper.exs`:
+
+```elixir
+defmodule MyApp.TailnetTest do
+  use ExUnit.Case, async: false
+  @moduletag :tailnet
+  @moduletag timeout: 120_000
+
+  setup do
+    on_exit(fn -> Tailscaled.logout() end) # removes the ephemeral node
+  end
+
+  test "joins the test tailnet" do
+    {:ok, key} =
+      case System.get_env("TAILSCALED_TEST_AUTH_KEY") do
+        nil -> Tailscaled.Testing.auth_key()
+        key -> {:ok, key}
+      end
+
+    :ok = Tailscaled.subscribe(["state"])
+    :ok = Tailscaled.login(auth_key: key)
+    assert_receive {Tailscaled, ["state"], _, :online, _}, 60_000
+
+    # Then exercise your own workflow, such as applying your Serve configuration.
+  end
+end
+```
+
+**Locally**, create an auth key for testing in the admin console (**Settings → Keys**):
+**Reusable**, **Ephemeral**, **Pre-approved**, and tagged, ideally in a tailnet used
+only for testing. Then run:
+
+```sh
+mix tailscaled.install /tmp/tailscaled-test/tailscaled
+TAILSCALED_TEST_AUTH_KEY=tskey-auth-... TAILSCALED_TEST_BINARY=/tmp/tailscaled-test/tailscaled \
+  mix test --only tailnet
+```
+
+**In GitHub Actions**, `Tailscaled.Testing.auth_key/1` creates a short-lived,
+single-use key from the job's OIDC identity, so no key is stored. Create the Tailscale
+trust credential described in its
+[module docs](https://github.com/sid2baker/tailscaled_ex/blob/main/lib/tailscaled/testing.ex),
+then:
+
+```yaml
+jobs:
+  tailnet:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MIX_ENV: test
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+      TS_TAGS: tag:ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - run: mix deps.get
+      - run: mix tailscaled.install "$RUNNER_TEMP/tailscaled"
+      - run: TAILSCALED_TEST_BINARY="$RUNNER_TEMP/tailscaled" mix test --only tailnet
+```
+
+This shows that login works and that your settings reach the daemon, not that other
+devices can reach your app. For Nerves projects, run it on the host; it does not cover
+the device, firmware, or kernel networking.
 
 ## Development
 
