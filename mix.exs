@@ -6,7 +6,7 @@ defmodule Tailscaled.MixProject do
   def project do
     [
       app: :tailscaled_ex,
-      version: "0.4.0",
+      version: "0.5.0",
       name: "Tailscaled",
       description: "Supervised tailscaled integration for Elixir and Nerves via LocalAPI",
       source_url: @source_url,

@@ -6,6 +6,8 @@ for breaking changes, and versions follow [Semantic Versioning](https://semver.o
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-23
+
 ### Added
 
 - Bootstrap installation before target dependencies compile by preloading the Mix
