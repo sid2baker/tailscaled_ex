@@ -6,6 +6,14 @@ for breaking changes, and versions follow [Semantic Versioning](https://semver.o
 
 ## Unreleased
 
+### Added
+
+- Bootstrap installation before target dependencies compile by preloading the Mix
+  task from source with an explicit architecture.
+- Explicit installer version and SHA-256 pins, verified archive caching, offline
+  installation, and reuse of identical installed binaries without rewriting them.
+- `Tailscaled.Installer.install!/2` for setup scripts without Mix or application startup.
+
 ## 0.4.0 - 2026-10-19
 
 ### Added

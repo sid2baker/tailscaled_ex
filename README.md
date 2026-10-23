@@ -28,8 +28,38 @@ config :tailscaled_ex, daemon_path: "/usr/sbin/tailscaled", tun: :userspace
 
 On a Linux host, use `mix deps.get` and `mix tailscaled.install ./bin/tailscaled`,
 then set `daemon_path` to its absolute runtime path and `tun: :userspace`.
-The installer verifies the checksum and detects the target architecture;
-see `mix help tailscaled.install` for overrides. Use separate overlays per architecture.
+The installer pins Tailscale 1.102.3 and its archive checksums. It caches verified
+archives and leaves an identical destination untouched. Use separate overlays per
+architecture.
+
+Before the Nerves toolchain or target dependencies are compiled, fetch dependencies
+and preload the task from source with an explicit architecture:
+
+```sh
+mix deps.get
+elixir -r deps/tailscaled_ex/lib/mix/tasks/tailscaled.install.ex -S mix tailscaled.install \
+  rootfs_overlay/usr/sbin/tailscaled --arch arm64
+```
+
+Ordinary Mix task discovery may compile dependencies; preloading bypasses it.
+Without `--arch`, target detection requires the initialized toolchain's
+`REBAR_TARGET_ARCH`; it never guesses from the board name or build host.
+
+To pin another stable version, supply **both** `--version X.Y.Z` and
+`--sha256 EXPECTED_ARCHIVE_SHA256`. There is no `latest` or automatic checksum lookup.
+Overrides do not imply library compatibility. `--cache-dir PATH` selects the archive
+cache; `--offline` installs only from a checksum-verified cache, with no network.
+See `mix help tailscaled.install` for all options.
+
+Setup code can use the same implementation without Mix or application startup:
+
+```elixir
+Tailscaled.Installer.install!("rootfs_overlay/usr/sbin/tailscaled", arch: "arm64")
+```
+
+For a standalone bootstrap script, load `lib/tailscaled/installer.ex` from the fetched
+dependency with `Code.require_file/1` first. The installer never executes the target
+binary or starts the daemon.
 
 The application starts automatically—do not add it to your supervision tree.
 Userspace mode supports Serve without root or TUN. For a host-wide network interface,
