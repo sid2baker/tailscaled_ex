@@ -97,6 +97,52 @@ defmodule Tailscaled.ControllerTest do
     end
   end
 
+  test "tag preferences are writable before login, replace lists, and do not enroll", ctx do
+    assert PropertyTable.get(ctx.table, ["auth", "state"]) == :needs_login
+
+    assert :ok =
+             Controller.configure(ctx.controller, %{advertise_tags: ["tag:b", "tag:a", "tag:a"]})
+
+    assert configuration(ctx).advertise_tags == ["tag:a", "tag:b"]
+    assert UnixHTTP.state(ctx.daemon).prefs["AdvertiseTags"] == ["tag:a", "tag:b"]
+    assert :ok = Controller.update_configuration(ctx.controller, %{advertise_tags: ["tag:ci"]})
+    assert configuration(ctx).advertise_tags == ["tag:ci"]
+    assert :ok = Controller.update_configuration(ctx.controller, %{hostname: "tagged"})
+    assert configuration(ctx).advertise_tags == ["tag:ci"]
+    assert :ok = Controller.update_configuration(ctx.controller, %{advertise_tags: []})
+    assert configuration(ctx).advertise_tags == []
+    assert PropertyTable.get(ctx.table, ["self", "tags"]) == []
+    refute Enum.any?(UnixHTTP.state(ctx.daemon).requests, &(&1.method == "POST"))
+  end
+
+  test "changing requested tags while running neither grants them nor reauthenticates", ctx do
+    UnixHTTP.notify(ctx.daemon, %{
+      "State" => 6,
+      "SelfChange" => %{"ID" => 1, "Tags" => ["tag:old"]}
+    })
+
+    eventually(fn -> assert PropertyTable.get(ctx.table, ["self", "tags"]) == ["tag:old"] end)
+    before = length(UnixHTTP.state(ctx.daemon).requests)
+    assert :ok = Controller.update_configuration(ctx.controller, %{advertise_tags: ["tag:new"]})
+    assert configuration(ctx).advertise_tags == ["tag:new"]
+    assert PropertyTable.get(ctx.table, ["self", "tags"]) == ["tag:old"]
+    assert PropertyTable.get(ctx.table, ["auth", "state"]) == :authenticated
+    requests = Enum.drop(UnixHTTP.state(ctx.daemon).requests, before)
+    refute Enum.any?(requests, &(&1.method == "POST"))
+
+    UnixHTTP.notify(ctx.daemon, %{"SelfChange" => %{"ID" => 1, "Tags" => ["tag:new"]}})
+    eventually(fn -> assert PropertyTable.get(ctx.table, ["self", "tags"]) == ["tag:new"] end)
+  end
+
+  test "tag readback mismatch is a configuration error, not a fabricated grant", ctx do
+    UnixHTTP.update(ctx.daemon, &%{&1 | failures: %{{"PATCH", "/localapi/v0/prefs"} => 200}})
+
+    assert {:error, :preferences_readback_mismatch} =
+             Controller.update_configuration(ctx.controller, %{advertise_tags: ["tag:ci"]})
+
+    assert PropertyTable.get(ctx.table, ["self", "tags"]) == []
+  end
+
   test "running commands serialize with configuration updates", ctx do
     tasks = [
       Task.async(fn -> Controller.set_running(ctx.controller, true) end),
@@ -152,6 +198,7 @@ defmodule Tailscaled.ControllerTest do
       accept_routes: true,
       ssh: true,
       advertise_routes: ["10.0.0.0/24"],
+      advertise_tags: [],
       serve: [%{https: 443, to: "http://localhost:4000"}]
     }
 
@@ -228,6 +275,7 @@ defmodule Tailscaled.ControllerTest do
       accept_routes: true,
       ssh: true,
       advertise_routes: ["10.0.0.0/24"],
+      advertise_tags: ["tag:ci"],
       serve: [%{https: 443, to: "http://localhost:4000"}]
     }
 

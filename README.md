@@ -75,7 +75,9 @@ For an existing daemon or other options, see the
 In your application's IEx session:
 
 ```elixir
-:ok = Tailscaled.update_configuration(%{hostname: "my-device", accept_dns: false})
+:ok = Tailscaled.update_configuration(%{
+  hostname: "my-device", accept_dns: false, advertise_tags: ["tag:gateway"]
+})
 Tailscaled.login() # Returns {:ok, url}; open it in a browser. Already online: :ok.
 Tailscaled.info()
 ```
@@ -89,6 +91,41 @@ For unattended login, use `Tailscaled.login(auth_key: key)` with a key from your
 secret source. Login initiates enrollment; observe `["state"]` for `:online`.
 Browser login waits up to 30 seconds for a URL, not browser completion.
 Treat keys and login URLs as secrets.
+
+### Requested and granted tags
+
+Set `advertise_tags` **before** `login/1`, as above, so first registration requests
+those tags. The tailnet's `tagOwners` policy must allow the authenticating user or
+auth key to request them. A node cannot grant itself tags. Tagged nodes are
+**tag-owned**, with key expiry disabled by default. Omit `advertise_tags` if you
+want the normal untagged login flow.
+
+```elixir
+Tailscaled.get_configuration() # :advertise_tags is the requested list
+Tailscaled.get(["self", "tags"]) # actual granted tags, default []
+Tailscaled.get(["peers", peer_id, "tags"]) # peer's granted tags, default []
+```
+
+Lists replace rather than append; tags are sorted and deduplicated. As in
+[1.104.1's `CheckTag`](https://github.com/tailscale/tailscale/blob/v1.104.1/tailcfg/tailcfg.go#L757-L786),
+names start with an ASCII letter and contain only ASCII letters (either case),
+digits or `-`, with the exact `tag:` prefix. Invalid input returns `{:error, :invalid_tag}`.
+
+**Existing nodes:** [1.104.1's preference update path](https://github.com/tailscale/tailscale/blob/v1.104.1/ipn/ipnlocal/local.go#L5536-L5604)
+updates `Hostinfo.RequestTags` while running. The
+[CLI takes its `Start` path when tags change](https://github.com/tailscale/tailscale/blob/v1.104.1/cmd/tailscale/cli/up.go#L466-L472)
+and only explicitly starts interactive re-authentication when requested or there
+is no node key. This does **not** prove that the server accepts every retagging
+transition without re-authentication. `update_configuration/1` returns `:ok` on
+preference readback, not tag approval; granted tags change only on daemon
+observations. The library never implicitly logs out, restarts registration, or
+forces re-authentication. Any required re-login is an operator decision.
+
+The inspected client protocol has no structured tag-denial category:
+[`RegisterResponse.Error`](https://github.com/tailscale/tailscale/blob/v1.104.1/tailcfg/tailcfg.go#L1383-L1385)
+is free-form text. Authentication errors remain sanitized; daemon-provided health
+details are available at `["health"]` (raw and potentially sensitive). A requested
+but missing grant is not itself classified as a rejection.
 
 `update_configuration/1` preserves omitted fields; `configure/1` resets them to
 library defaults. Startup only reads settings. The daemon owns persistence;

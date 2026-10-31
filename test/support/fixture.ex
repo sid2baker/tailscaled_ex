@@ -20,6 +20,7 @@ defmodule Tailscaled.Test.Fixture do
         "RouteAll" => false,
         "RunSSH" => false,
         "AdvertiseRoutes" => nil,
+        "AdvertiseTags" => nil,
         "WantRunning" => false,
         "Unmanaged" => "kept"
       },

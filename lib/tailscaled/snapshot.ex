@@ -142,6 +142,7 @@ defmodule Tailscaled.Snapshot do
       hostname: peer["HostName"],
       dns_name: dns_name(peer["DNSName"]),
       ips: addresses(peer["TailscaleIPs"]),
+      tags: peer["Tags"] || [],
       online: peer["Online"]
     }
   end
@@ -152,6 +153,7 @@ defmodule Tailscaled.Snapshot do
       hostname: get_in(peer, ["Hostinfo", "Hostname"]),
       dns_name: dns_name(peer["Name"]),
       ips: addresses(peer["Addresses"]),
+      tags: peer["Tags"] || [],
       online: peer["Online"]
     }
   end
@@ -167,7 +169,10 @@ defmodule Tailscaled.Snapshot do
     }
 
     fields = if prefix == [], do: fields, else: Map.put(fields, "online", node[:online])
+    tags_path = if prefix == [], do: ["self", "tags"], else: prefix ++ ["tags"]
+
     Map.new(fields, fn {key, value} -> {prefix ++ [key], value} end)
+    |> Map.put(tags_path, node[:tags] || [])
   end
 
   defp addresses(values) do

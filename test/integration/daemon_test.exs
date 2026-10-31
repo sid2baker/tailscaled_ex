@@ -56,16 +56,34 @@ defmodule Tailscaled.DaemonIntegrationTest do
     assert configuration(ctx).accept_dns
 
     assert :ok =
-             Controller.configure(ctx.opts[:controller], %{hostname: "tsx-integration"})
+             Controller.configure(ctx.opts[:controller], %{
+               hostname: "tsx-integration",
+               advertise_tags: ["tag:ci"]
+             })
 
     assert configuration(ctx).hostname == "tsx-integration"
+    assert configuration(ctx).advertise_tags == ["tag:ci"]
+    assert PropertyTable.get(ctx.table, ["auth", "state"]) == :needs_login
+    assert PropertyTable.get(ctx.table, ["self", "tags"]) == []
 
-    assert {:ok, %{"Hostname" => "tsx-integration", "CorpDNS" => false}, _} =
+    assert {:ok,
+            %{"Hostname" => "tsx-integration", "CorpDNS" => false, "AdvertiseTags" => ["tag:ci"]},
+            _} =
              LocalAPI.request(ctx.opts, "GET", "prefs")
 
-    assert :ok = Controller.update_configuration(ctx.opts[:controller], %{accept_routes: true})
+    assert :ok =
+             Controller.update_configuration(ctx.opts[:controller], %{
+               accept_routes: true,
+               advertise_tags: ["tag:ci", "tag:integration"]
+             })
 
-    assert {:ok, %{"Hostname" => "tsx-integration", "CorpDNS" => false, "RouteAll" => true}, _} =
+    assert {:ok,
+            %{
+              "Hostname" => "tsx-integration",
+              "CorpDNS" => false,
+              "RouteAll" => true,
+              "AdvertiseTags" => ["tag:ci", "tag:integration"]
+            }, _} =
              LocalAPI.request(ctx.opts, "GET", "prefs")
 
     # Restarting the controller rehydrates from the still-running daemon, not defaults.
@@ -202,14 +220,16 @@ defmodule Tailscaled.DaemonIntegrationTest do
              Controller.configure(ctx.opts[:controller], %{
                hostname: ctx.hostname,
                accept_dns: false,
-               accept_routes: false
+               accept_routes: false,
+               advertise_tags: ["tag:ci"]
              })
 
     # Enrollment uses the library's own login path. Test keys must be tagged.
     assert {:ok, key} = Fixture.auth_key()
     assert :ok = Controller.login(ctx.opts[:controller], {:auth_key, key})
     assert {:ok, identity} = Fixture.await_enrolled(ctx.opts, 60_000)
-    assert [_ | _] = identity.tags
+    assert "tag:ci" in identity.tags
+    eventually(fn -> assert "tag:ci" in PropertyTable.get(ctx.table, ["self", "tags"], []) end)
 
     generation = PropertyTable.get(ctx.table, ["monitor", "generation"])
     daemon_pid = :sys.get_state(ctx.opts[:daemon]).pid
@@ -224,6 +244,7 @@ defmodule Tailscaled.DaemonIntegrationTest do
     # No second login and a fresh monitor generation: not cached success.
     assert {:ok, restarted_identity} = Fixture.await_enrolled(ctx.opts, 60_000)
     assert restarted_identity == identity
+    eventually(fn -> assert "tag:ci" in PropertyTable.get(ctx.table, ["self", "tags"], []) end)
 
     assert :ok = Controller.logout(ctx.opts[:controller])
 

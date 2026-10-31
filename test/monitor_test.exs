@@ -63,6 +63,51 @@ defmodule Tailscaled.MonitorTest do
     assert PropertyTable.get(ctx.table, ["state"]) == :offline
   end
 
+  test "granted tags come from status and full node notifications, with empty defaults" do
+    for tag_fields <- [%{}, %{"Tags" => nil}, %{"Tags" => ["tag:ci"]}] do
+      expected = tag_fields["Tags"] || []
+
+      initial =
+        Snapshot.update(%Snapshot{}, %{
+          "InitialStatus" => %{
+            "BackendState" => "Running",
+            "Self" => Map.merge(%{"ID" => "self"}, tag_fields),
+            "Peer" => %{"key" => Map.merge(%{"NodeID" => 42, "ID" => "n42"}, tag_fields)}
+          }
+        })
+
+      assert Snapshot.properties(initial)[["self", "tags"]] == expected
+      assert Snapshot.properties(initial)[["peers", "n42", "tags"]] == expected
+
+      updated =
+        Snapshot.update(initial, %{
+          "SelfChange" => Map.merge(%{"ID" => 1, "StableID" => "self"}, tag_fields),
+          "PeersChanged" => [Map.merge(%{"ID" => 42, "StableID" => "n42"}, tag_fields)]
+        })
+
+      assert Snapshot.properties(updated)[["self", "tags"]] == expected
+      assert Snapshot.properties(updated)[["peers", "n42", "tags"]] == expected
+    end
+  end
+
+  test "tag notifications replace granted tags and preserve daemon health details", ctx do
+    :ok = PropertyTable.subscribe(ctx.table, ["self", "tags"])
+    UnixHTTP.notify(ctx.daemon, %{"SelfChange" => %{"ID" => 1, "Tags" => ["tag:ci"]}})
+    assert_receive {Tailscaled, ["self", "tags"], [], ["tag:ci"], _}
+    UnixHTTP.notify(ctx.daemon, %{"SelfChange" => %{"ID" => 1, "Tags" => nil}})
+    assert_receive {Tailscaled, ["self", "tags"], ["tag:ci"], [], _}
+
+    # Health text is daemon-provided, not a library-generated tag reason catalogue.
+    warning = "Tag request denied by policy"
+
+    UnixHTTP.notify(ctx.daemon, %{
+      "Health" => %{"Warnings" => %{"fixture" => %{"Text" => warning}}}
+    })
+
+    eventually(fn -> assert PropertyTable.get(ctx.table, ["health"]) == [warning] end)
+    assert PropertyTable.get(ctx.table, ["self", "tags"]) == []
+  end
+
   test "quiet streams stay connected without periodic status or configuration requests", ctx do
     eventually(fn ->
       assert PropertyTable.get(ctx.table, ["configuration", "state"]) == :ready

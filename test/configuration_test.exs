@@ -42,6 +42,55 @@ defmodule Tailscaled.ConfigurationTest do
     end
   end
 
+  test "tags match CheckTag and normalize as a sorted set without changing case" do
+    assert {:ok, config} =
+             Configuration.normalize(%{advertise_tags: ["tag:z", "tag:A-1", "tag:z", "tag:ci"]})
+
+    assert config.advertise_tags == ["tag:A-1", "tag:ci", "tag:z"]
+    assert {:ok, %{advertise_tags: []}} = Configuration.normalize(%{})
+
+    for value <- [
+          nil,
+          "tag:ci",
+          [nil],
+          [1],
+          [:ci],
+          ["ci"],
+          ["Tag:ci"],
+          ["tag:"],
+          ["tag:1a"],
+          ["tag:-a"],
+          ["tag:a_b"],
+          ["tag:a.b"],
+          ["tag:é"],
+          ["tag:a\n"],
+          [<<255>>]
+        ] do
+      assert {:error, :invalid_tag} = Configuration.normalize(%{advertise_tags: value})
+    end
+
+    assert {:error, :invalid_configuration} = Configuration.normalize(%{tags: ["tag:ci"]})
+  end
+
+  test "tag patch and readback compare sets, including nil and absent values" do
+    {:ok, config} = Configuration.normalize(%{advertise_tags: ["tag:b", "tag:a"]})
+    assert Configuration.preferences(config)["AdvertiseTags"] == ["tag:a", "tag:b"]
+
+    assert Configuration.patch(%{advertise_tags: config.advertise_tags}, %{}) == %{
+             "AdvertiseTags" => ["tag:a", "tag:b"],
+             "AdvertiseTagsSet" => true
+           }
+
+    current = %{"AdvertiseTags" => ["tag:b", "tag:a", "tag:b"]}
+    assert Configuration.patch(%{advertise_tags: config.advertise_tags}, current) == %{}
+    assert Configuration.observed(current, []).advertise_tags == ["tag:a", "tag:b"]
+
+    for prefs <- [%{}, %{"AdvertiseTags" => nil}] do
+      assert Configuration.observed(prefs, []).advertise_tags == []
+      assert Configuration.patch(%{advertise_tags: []}, prefs) == %{}
+    end
+  end
+
   test "configuration delegates Serve endpoint normalization" do
     assert {:ok, config} =
              Configuration.normalize(%{serve: [%{https: 443, to: "http://LOCALHOST:4000"}]})
@@ -65,6 +114,7 @@ defmodule Tailscaled.ConfigurationTest do
              accept_routes: true,
              ssh: false,
              advertise_routes: [],
+             advertise_tags: [],
              serve: []
            }
   end

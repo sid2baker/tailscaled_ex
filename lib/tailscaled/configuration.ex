@@ -11,6 +11,7 @@ defmodule Tailscaled.Configuration do
     accept_routes: false,
     ssh: false,
     advertise_routes: [],
+    advertise_tags: [],
     serve: []
   }
   @fields %{
@@ -18,13 +19,15 @@ defmodule Tailscaled.Configuration do
     accept_dns: "CorpDNS",
     accept_routes: "RouteAll",
     ssh: "RunSSH",
-    advertise_routes: "AdvertiseRoutes"
+    advertise_routes: "AdvertiseRoutes",
+    advertise_tags: "AdvertiseTags"
   }
 
   def normalize(config) when is_map(config) do
     with true <- Enum.all?(Map.keys(config), &Map.has_key?(@defaults, &1)),
          {:ok, hostname} <- hostname(Map.get(config, :hostname, "")),
          {:ok, routes} <- routes(Map.get(config, :advertise_routes, [])),
+         {:ok, tags} <- tags(Map.get(config, :advertise_tags, [])),
          {:ok, serve} <- Serve.normalize(Map.get(config, :serve, [])),
          true <-
            Enum.all?(
@@ -33,7 +36,12 @@ defmodule Tailscaled.Configuration do
            ) do
       {:ok,
        Map.merge(@defaults, config)
-       |> Map.merge(%{hostname: hostname, advertise_routes: routes, serve: serve})}
+       |> Map.merge(%{
+         hostname: hostname,
+         advertise_routes: routes,
+         advertise_tags: tags,
+         serve: serve
+       })}
     else
       false -> {:error, :invalid_configuration}
       error -> error
@@ -45,6 +53,7 @@ defmodule Tailscaled.Configuration do
   def observed(prefs, serve) do
     Map.new(@fields, fn {key, field} -> {key, Map.get(prefs, field, @defaults[key])} end)
     |> Map.update!(:advertise_routes, &Enum.sort(&1 || []))
+    |> Map.update!(:advertise_tags, &Enum.sort(Enum.uniq(&1 || [])))
     |> Map.merge(if is_nil(serve), do: %{}, else: %{serve: serve})
   end
 
@@ -60,6 +69,9 @@ defmodule Tailscaled.Configuration do
     |> Map.new()
   end
 
+  defp equivalent?("AdvertiseTags", old, new),
+    do: Enum.sort(Enum.uniq(old || [])) == Enum.sort(Enum.uniq(new || []))
+
   defp equivalent?("AdvertiseRoutes", old, new), do: Enum.sort(old || []) == new
   defp equivalent?(_key, old, new), do: old == new
 
@@ -74,6 +86,18 @@ defmodule Tailscaled.Configuration do
   end
 
   defp hostname(_), do: {:error, :invalid_hostname}
+
+  defp tags(values) when is_list(values) do
+    # tailcfg.CheckTag (Tailscale 1.104.1) accepts ASCII letters of either case.
+    if Enum.all?(
+         values,
+         &(is_binary(&1) and Regex.match?(~r/\Atag:[a-zA-Z][a-zA-Z0-9-]*\z/, &1))
+       ),
+       do: {:ok, Enum.sort(Enum.uniq(values))},
+       else: {:error, :invalid_tag}
+  end
+
+  defp tags(_), do: {:error, :invalid_tag}
 
   defp routes(values) when is_list(values) do
     Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->

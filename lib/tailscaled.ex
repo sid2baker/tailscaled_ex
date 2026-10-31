@@ -66,6 +66,7 @@ defmodule Tailscaled do
   | `:accept_routes` | `false` | Whether to accept advertised subnet routes. |
   | `:ssh` | `false` | Whether to enable Tailscale SSH. |
   | `:advertise_routes` | `[]` | CIDR strings or `{ip_tuple, prefix_length}`; normalized to sorted, unique network CIDRs. |
+  | `:advertise_tags` | `[]` | Requested ACL tags, sorted and deduplicated. `tag:` followed by an ASCII letter, then ASCII letters, digits or `-`; case is preserved. |
   | `:serve` | `[]` | `[%{https: port, to: "http://127.0.0.1:4000"}]`; unique ports in `1..65535`, HTTP(S) targets without userinfo or fragments. |
 
   DNS management is opt-in: `accept_dns: false` leaves it to the device's network
@@ -79,6 +80,19 @@ defmodule Tailscaled do
   omitted fields. A fresh or existing daemon may still have DNS enabled; use
   `update_configuration(%{accept_dns: false})` to disable it without resetting other
   settings.
+
+  Set `:advertise_tags` before `login/1` to request tags on first registration.
+  Tags require permission through the tailnet's `tagOwners`; the node cannot grant
+  itself tags. Auth-key tags can also contribute to granted tags. Tagged nodes are
+  tag-owned and have key expiry disabled by default.
+
+  `:advertise_tags` is a request, not proof of a grant. Read `get(["self", "tags"])`
+  for granted tags. On Tailscale 1.104.1, preference updates send new `RequestTags`
+  even while running; the CLI takes its `Start` path for tag changes. Neither that
+  client source nor successful preference readback guarantees the server accepts
+  every existing-node tag transition without re-authentication. The library only
+  writes preferences; it never logs out, restarts registration, or forces re-auth.
+  If the server requires re-authentication, it must be operator-authorized.
 
   Setting `:serve` replaces all top-level TCP/Web listeners and disables Funnel,
   including settings made outside this library. Separate Tailscale Services are
@@ -103,13 +117,16 @@ defmodule Tailscaled do
     :needs_machine_auth | :stopped | :starting | :running`.
   * `["ipv4"]`, `["ipv6"]`: Erlang IP tuples; absent until assigned.
   * `["hostname"]`, `["dns_name"]`: self host and tailnet DNS names.
+  * `["self", "tags"]`: control-plane-granted self tags; `[]` when absent or nil.
+    These are independent of requested `:advertise_tags` in the configuration cache.
   * `["auth", "state"]`: `:unknown | :needs_login | :authenticating |
     :needs_approval | :authenticated | :stopped | :error`.
   * `["auth", "url"]`: secret HTTPS enrollment URL, removed on completion, error,
     disconnect, profile reset, or cache expiry. `:auth_url_ttl` does not extend the server's URL validity.
   * `["auth", "error"]`: sanitized failure category, absent on success.
   * `["peers", id, field]`: stable node ID (numeric fallback), with `"hostname"`,
-    `"dns_name"`, `"ipv4"`, `"ipv6"`, and `"online"` fields. Missing values are absent.
+    `"dns_name"`, `"ipv4"`, `"ipv6"`, `"online"`, and `"tags"` fields. Peer tags are
+    control-plane-granted and default to `[]`; other missing values are absent.
   * `["health"]`: raw daemon health warning strings; these can contain login URLs.
     `info/0` redacts HTTP(S) URLs when displaying them.
   * `["configuration", "value"]`: cached managed configuration, absent when preferences
@@ -137,6 +154,7 @@ defmodule Tailscaled do
           optional(:accept_routes) => boolean(),
           optional(:ssh) => boolean(),
           optional(:advertise_routes) => [String.t() | {:inet.ip_address(), non_neg_integer()}],
+          optional(:advertise_tags) => [String.t()],
           optional(:serve) => [%{https: 1..65_535, to: String.t()}]
         }
   @type result :: :ok | {:error, term()}
@@ -147,7 +165,9 @@ defmodule Tailscaled do
   failed writes are never queued or retried. Preferences and Serve are not one
   transaction: an error can leave partial changes.
   Persistence follows the daemon's profile lifecycle (unenrolled profiles are memory-only).
-  Authentication keys and unknown fields are rejected.
+  Authentication keys and unknown fields are rejected. `:advertise_tags` requests
+  tags; set it before `login/1` for first registration. A successful write does not
+  mean the server granted them; observe `["self", "tags"]`.
 
   Changing hostname and setting nonempty Serve in the same call is rejected before
   writes (`:hostname_change_requires_separate_serve`). Rename first, wait for the new
@@ -159,7 +179,9 @@ defmodule Tailscaled do
 
   @doc """
   Change selected managed settings while running. Omitted fields are preserved;
-  lists are replaced, not appended (`serve: []` removes all managed listeners).
+  lists are replaced, not appended (`serve: []` removes all managed listeners;
+  `advertise_tags: []` clears the request, not a promise to revoke granted tags).
+  Changing requested tags never triggers logout or re-authentication.
 
   Serializes library callers and writes only supplied preference fields. Omitted
   Serve settings are left untouched, even if this library cannot represent them.

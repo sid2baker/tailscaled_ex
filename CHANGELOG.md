@@ -6,6 +6,14 @@ for breaking changes, and versions follow [Semantic Versioning](https://semver.o
 
 ## Unreleased
 
+### Added
+
+- Request ACL tags with `advertise_tags` before login or through configuration
+  updates, with tag validation and sorted, unique replacement lists. Grants still
+  require tailnet `tagOwners` permission; updates never force re-authentication.
+- Observe control-plane-granted tags at `["self", "tags"]` and
+  `["peers", id, "tags"]`, independently of requested tags.
+
 ## 0.5.0 - 2026-10-23
 
 ### Added
