@@ -6,6 +6,8 @@ for breaking changes, and versions follow [Semantic Versioning](https://semver.o
 
 ## Unreleased
 
+## 0.6.0 - 2026-10-31
+
 ### Added
 
 - Request ACL tags with `advertise_tags` before login or through configuration
